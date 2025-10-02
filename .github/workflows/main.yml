@@ -7,7 +7,7 @@ on:
 jobs:
   build:
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 60   # keep alive for 1 hour
 
     steps:
     - name: Checkout
@@ -38,8 +38,37 @@ jobs:
           Set-LocalUser -Name $username -Password $securePass
         }
 
-    - name: Run Playit agent (prints claim URL)
+    - name: Run Playit agent and log output
       shell: powershell
       run: |
-        Write-Host "Starting Playit agent. Watch logs below for the claim URL."
-        .\playit.exe
+        $logPath = "$PWD\playit.log"
+        Write-Host "Launching Playit agent... logs will be written to $logPath"
+        Start-Process -FilePath .\playit.exe -NoNewWindow -RedirectStandardOutput $logPath -RedirectStandardError $logPath
+
+        Write-Host "Waiting for Playit claim URL..."
+        $claim = $null
+        for ($i=0; $i -lt 60; $i++) {
+          Start-Sleep -Seconds 2
+          if (Test-Path $logPath) {
+            $content = Get-Content $logPath -Raw
+            if ($content -match "https:\/\/playit\.gg\/claim\/\S+") {
+              $claim = [regex]::Match($content, "https:\/\/playit\.gg\/claim\/\S+").Value
+              Write-Host "============================="
+              Write-Host "CLAIM URL: $claim"
+              Write-Host "============================="
+              break
+            }
+          }
+        }
+
+        if (-not $claim) {
+          Write-Host "❌ No claim URL found in logs after waiting."
+        }
+
+        Write-Host "---- BEGIN PLAYIT LOG ----"
+        Get-Content $logPath
+        Write-Host "---- END PLAYIT LOG ----"
+
+        # Keep job alive so tunnel stays running
+        Write-Host "Keeping Playit alive... Press cancel in GitHub Actions UI to stop."
+        while ($true) { Start-Sleep -Seconds 30 }
