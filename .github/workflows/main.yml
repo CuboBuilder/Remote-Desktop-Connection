@@ -41,16 +41,17 @@ jobs:
     - name: Run Playit agent and log output
       shell: powershell
       run: |
-        $logPath = "$PWD\playit.log"
-        Write-Host "Launching Playit agent... logs will be written to $logPath"
-        Start-Process -FilePath .\playit.exe -NoNewWindow -RedirectStandardOutput $logPath -RedirectStandardError $logPath
+        $outPath = "$PWD\playit_out.log"
+        $errPath = "$PWD\playit_err.log"
+        Write-Host "Launching Playit agent..."
+        Start-Process -FilePath .\playit.exe -NoNewWindow -RedirectStandardOutput $outPath -RedirectStandardError $errPath
 
         Write-Host "Waiting for Playit claim URL..."
         $claim = $null
         for ($i=0; $i -lt 60; $i++) {
           Start-Sleep -Seconds 2
-          if (Test-Path $logPath) {
-            $content = Get-Content $logPath -Raw
+          if (Test-Path $outPath) {
+            $content = Get-Content $outPath -Raw
             if ($content -match "https:\/\/playit\.gg\/claim\/\S+") {
               $claim = [regex]::Match($content, "https:\/\/playit\.gg\/claim\/\S+").Value
               Write-Host "============================="
@@ -66,7 +67,8 @@ jobs:
         }
 
         Write-Host "---- BEGIN PLAYIT LOG ----"
-        Get-Content $logPath
+        if (Test-Path $outPath) { Get-Content $outPath }
+        if (Test-Path $errPath) { Get-Content $errPath }
         Write-Host "---- END PLAYIT LOG ----"
 
         # Keep job alive so tunnel stays running
