@@ -1,25 +1,81 @@
 name: Cl
 
-on: [push, workflow_dispatch]
+on:
+  push:
+  workflow_dispatch:
 
 jobs:
   build:
-
     runs-on: windows-latest
+    timeout-minutes: 60
 
     steps:
-    - name: Download
-      run: Invoke-WebRequest https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip -OutFile ngrok.zip
-    - name: Extract
-      run: Expand-Archive ngrok.zip
-    - name: Auth
-      run: .\ngrok\ngrok.exe authtoken $Env:NGROK_AUTH_TOKEN
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Download Playit agent (provided URL)
+      run: |
+        $url = "https://github.com/playit-cloud/playit-agent/releases/download/v0.16.2/playit-windows-x86_64-signed.exe"
+        Invoke-WebRequest -Uri $url -OutFile playit.exe
+
+    - name: Make playit executable (Windows no-op, kept for parity)
+      run: |
+        Write-Output "Downloaded playit.exe size:"
+        Get-Item .\playit.exe | Select-Object FullName,Length
+
+    - name: Enable RDP and firewall rules
+      run: |
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+        Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 1
+
+    - name: Create local user
+      shell: powershell
+      run: |
+        # Use secrets for username and password to avoid leaking credentials in logs.
+        $username = $env:LOCAL_USER
+        $passwordPlain = $env:LOCAL_PASS
+
+        # Create local account if it does not exist
+        if (-not (Get-LocalUser -Name $username -ErrorAction SilentlyContinue)) {
+          $securePass = ConvertTo-SecureString $passwordPlain -AsPlainText -Force
+          New-LocalUser -Name $username -Password $securePass -FullName $username -Description "Account created by GitHub Actions for RDP"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member $username
+        } else {
+          Write-Host "Local user $username already exists. Setting password."
+          $securePass = ConvertTo-SecureString $passwordPlain -AsPlainText -Force
+          Set-LocalUser -Name $username -Password $securePass
+        }
+
       env:
-        NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
-    - name: Enable TS
-      run: Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server'-name "fDenyTSConnections" -Value 0
-    - run: Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-    - run: Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -Value 1
-    - run: Set-LocalUser -Name "runneradmin" -Password (ConvertTo-SecureString -AsPlainText "P@ssw0rd!" -Force)
-    - name: Create Tunnel
-      run: .\ngrok\ngrok.exe tcp 3389
+        # Replace these with repository secrets:
+        LOCAL_USER: ${{ secrets.LOCAL_USER }}     # e.g. "admin"
+        LOCAL_PASS: ${{ secrets.LOCAL_PASS }}     # e.g. "letmein123"
+
+    - name: Start Playit agent (background)
+      shell: powershell
+      run: |
+        # Run the Playit agent in the background. The agent will read SECRET_KEY from the environment.
+        # We start it using Start-Process so the job doesn't block waiting on interactive prompts.
+        # If your agent binary supports a specific 'run' or 'agent' subcommand you can add it to -ArgumentList.
+        $exe = Join-Path $PWD "playit.exe"
+        if (-not (Test-Path $exe)) { throw "playit.exe not found" }
+
+        Write-Host "Starting playit agent..."
+        Start-Process -FilePath $exe -ArgumentList @() -NoNewWindow -PassThru | Out-Null
+
+        # Give the agent a few seconds to start and print logs (optional)
+        Start-Sleep -Seconds 8
+        Get-Content -Path $exe -ErrorAction SilentlyContinue | Out-Null
+
+    - name: Confirm Playit process is running
+      shell: powershell
+      run: |
+        $proc = Get-Process -Name playit -ErrorAction SilentlyContinue
+        if ($proc) {
+          Write-Host "Playit process found: $($proc.Id) (Status: running)"
+        } else {
+          Write-Host "Playit process not found. Dumping recent processes for debugging:"
+          Get-Process | Sort-Object CPU -Descending | Select-Object -First 20
+          exit 1
+        }
