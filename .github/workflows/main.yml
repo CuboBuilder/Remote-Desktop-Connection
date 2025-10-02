@@ -13,17 +13,12 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v4
 
-    - name: Download Playit agent (provided URL)
+    - name: Download Playit agent
       run: |
         $url = "https://github.com/playit-cloud/playit-agent/releases/download/v0.16.2/playit-windows-x86_64-signed.exe"
         Invoke-WebRequest -Uri $url -OutFile playit.exe
 
-    - name: Make playit executable (Windows no-op, kept for parity)
-      run: |
-        Write-Output "Downloaded playit.exe size:"
-        Get-Item .\playit.exe | Select-Object FullName,Length
-
-    - name: Enable RDP and firewall rules
+    - name: Enable RDP and firewall
       run: |
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
@@ -32,50 +27,19 @@ jobs:
     - name: Create local user
       shell: powershell
       run: |
-        # Use secrets for username and password to avoid leaking credentials in logs.
-        $username = $env:LOCAL_USER
-        $passwordPlain = $env:LOCAL_PASS
+        $username = "admin"
+        $passwordPlain = "Letmein123!"   # must meet Windows complexity rules
+        $securePass = ConvertTo-SecureString $passwordPlain -AsPlainText -Force
 
-        # Create local account if it does not exist
         if (-not (Get-LocalUser -Name $username -ErrorAction SilentlyContinue)) {
-          $securePass = ConvertTo-SecureString $passwordPlain -AsPlainText -Force
-          New-LocalUser -Name $username -Password $securePass -FullName $username -Description "Account created by GitHub Actions for RDP"
+          New-LocalUser -Name $username -Password $securePass -FullName $username -Description "RDP user"
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member $username
         } else {
-          Write-Host "Local user $username already exists. Setting password."
-          $securePass = ConvertTo-SecureString $passwordPlain -AsPlainText -Force
           Set-LocalUser -Name $username -Password $securePass
         }
 
-      env:
-        # Replace these with repository secrets:
-        LOCAL_USER: ${{ secrets.LOCAL_USER }}     # e.g. "admin"
-        LOCAL_PASS: ${{ secrets.LOCAL_PASS }}     # e.g. "letmein123"
-
-    - name: Start Playit agent (background)
+    - name: Run Playit agent (prints claim URL)
       shell: powershell
       run: |
-        # Run the Playit agent in the background. The agent will read SECRET_KEY from the environment.
-        # We start it using Start-Process so the job doesn't block waiting on interactive prompts.
-        # If your agent binary supports a specific 'run' or 'agent' subcommand you can add it to -ArgumentList.
-        $exe = Join-Path $PWD "playit.exe"
-        if (-not (Test-Path $exe)) { throw "playit.exe not found" }
-
-        Write-Host "Starting playit agent..."
-        Start-Process -FilePath $exe -ArgumentList @() -NoNewWindow -PassThru | Out-Null
-
-        # Give the agent a few seconds to start and print logs (optional)
-        Start-Sleep -Seconds 8
-        Get-Content -Path $exe -ErrorAction SilentlyContinue | Out-Null
-
-    - name: Confirm Playit process is running
-      shell: powershell
-      run: |
-        $proc = Get-Process -Name playit -ErrorAction SilentlyContinue
-        if ($proc) {
-          Write-Host "Playit process found: $($proc.Id) (Status: running)"
-        } else {
-          Write-Host "Playit process not found. Dumping recent processes for debugging:"
-          Get-Process | Sort-Object CPU -Descending | Select-Object -First 20
-          exit 1
-        }
+        Write-Host "Starting Playit agent. Watch logs below for the claim URL."
+        .\playit.exe
